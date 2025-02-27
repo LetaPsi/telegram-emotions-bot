@@ -38,7 +38,30 @@ def save_to_excel(data):
     workbook.save(EXCEL_FILE)
 
 async def start(update: Update, context: CallbackContext):
+    """Начало работы с ботом"""
     await update.message.reply_text("Привет! Я помогу вести твой дневник эмоций. Расскажи, что случилось?")
+
+async def handle_text(update: Update, context: CallbackContext):
+    """Обрабатывает текстовые сообщения от пользователя"""
+    user_id = str(update.message.from_user.id)
+    text = update.message.text
+
+    data = load_data()
+    if user_id not in data:
+        data[user_id] = []
+
+    # Сохраняем ситуацию в дневник
+    data[user_id].append({
+        "дата": update.message.date.strftime("%Y-%m-%d %H:%M:%S"),
+        "ситуация": text,
+        "факты": "",
+        "эмоции": ""
+    })
+
+    save_data(data)
+    save_to_excel(data)
+
+    await update.message.reply_text("Я записал ситуацию. Теперь попробуй отделить факты от эмоций.")
 
 async def export_data(update: Update, context: CallbackContext):
     """Отправка файла с дневником"""
@@ -52,7 +75,7 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("export", export_data))  
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))  # Обработчик текстовых сообщений
 
     print("Бот запущен...")
     app.run_polling()
