@@ -1,126 +1,125 @@
 import os
 import logging
-import json
 import openai
-import openpyxl
+import pandas as pd
+from flask import Flask, request
 from dotenv import load_dotenv
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler, filters, ContextTypes
+)
 
-# Загружаем переменные окружения из .env
+# Загрузка переменных из .env
 load_dotenv()
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
-# Настраиваем OpenAI
+# Настройка OpenAI
 openai.api_key = OPENAI_API_KEY
 
-# Файл для сохранения данных
-EXCEL_FILE = "diary.xlsx"
+# Логирование
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# Включаем логирование
-logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
+# Flask сервер для вебхука
+app = Flask(__name__)
 
-# Функция для отправки запроса в ChatGPT
+# Файл для хранения дневника эмоций
+EXCEL_FILE = "emotions_journal.xlsx"
+
+# Функция для анализа текста через OpenAI
 def analyze_text(text):
     prompt = f"""
-    Проанализируй следующий текст: {text}
-    Определи:
-    1. Искажения, которые транслирует мне мой патологический критик.
-    2. Мои эмоции.
-    3. Факты.
-    4. Наводящие вопросы, чтобы помочь мне разобраться в этой ситуации.
-    5. Варианты, как я могу обезоружить критика.
-
-    Ответ должен быть в формате JSON:
-    {{
-        "distortion": "Описание искажений и анализа критика",
-        "comment": "Как можно обезоружить критика"
-    }}
+    Проанализируй ситуацию: "{text}".
+    1. Определи, какие искажения транслирует патологический критик.
+    2. Какие эмоции присутствуют в этой ситуации?
+    3. Выдели факты из ситуации.
+    4. Сформулируй наводящие вопросы для анализа.
+    5. Как можно обезоружить патологического критика?
+    Ответ оформи в формате:
+    - Искажения: ...
+    - Эмоции: ...
+    - Факты: ...
+    - Вопросы: ...
+    - Как обезоружить критика: ...
     """
-
     response = openai.ChatCompletion.create(
-        model="gpt-4",
-        messages=[{"role": "system", "content": "Ты - опытный психолог."}, {"role": "user", "content": prompt}],
-        temperature=0.7
+        model="gpt-3.5-turbo",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.5
     )
+    return response["choices"][0]["message"]["content"].strip()
+
+# Функция для сохранения данных в Excel
+def save_to_excel(text, analysis):
+    data = {
+        "Ситуация": [text],
+        "Искажения": [analysis.get("Искажения", "")],
+        "Эмоции": [analysis.get("Эмоции", "")],
+        "Факты": [analysis.get("Факты", "")],
+        "Опровержение": [analysis.get("Как обезоружить критика", "")]
+    }
+    df = pd.DataFrame(data)
 
     try:
-        result = json.loads(response["choices"][0]["message"]["content"])
-        return result
-    except (KeyError, json.JSONDecodeError):
-        return {"distortion": "Ошибка анализа.", "comment": "Попробуй позже."}
+        existing_df = pd.read_excel(EXCEL_FILE)
+        df = pd.concat([existing_df, df], ignore_index=True)
+    except FileNotFoundError:
+        pass
 
-# Функция сохранения данных в Excel
-def save_to_excel(situation, distortion, comment):
-    if not os.path.exists(EXCEL_FILE):
-        workbook = openpyxl.Workbook()
-        sheet = workbook.active
-        sheet.append(["Ситуация", "Искажение", "Опровержение"])
-    else:
-        workbook = openpyxl.load_workbook(EXCEL_FILE)
-        sheet = workbook.active
+    df.to_excel(EXCEL_FILE, index=False)
 
-    sheet.append([situation, distortion, comment])
-    workbook.save(EXCEL_FILE)
+# Функция обработки команды /start
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Привет! Расскажи, что у тебя случилось?")
 
-# Команда /start
-async def start(update: Update, context: CallbackContext):
-    await update.message.reply_text("Привет! Расскажи, что у тебя случилось (можно голосом или текстом).")
+# Функция обработки текстовых сообщений
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_message = update.message.text
+    await update.message.reply_text("Анализирую ситуацию...")
+    
+    # Отправляем запрос в OpenAI
+    analysis = analyze_text(user_message)
 
-# Обработчик аудио (транскрипция + анализ)
-async def handle_voice(update: Update, context: CallbackContext):
-    user = update.message.from_user
-    voice = update.message.voice
+    # Разбираем текст ответа
+    analysis_dict = {}
+    for line in analysis.split("\n"):
+        if ": " in line:
+            key, value = line.split(": ", 1)
+            analysis_dict[key.strip()] = value.strip()
 
-    # Запрашиваем транскрипцию у Telegram
-    transcript = voice.transcribe()
+    # Сохраняем в Excel
+    save_to_excel(user_message, analysis_dict)
 
-    if not transcript:
-        await update.message.reply_text("Не удалось распознать голос. Попробуй еще раз.")
-        return
+    # Отправляем пользователю разбор
+    await update.message.reply_text(f"Разбор ситуации:\n{analysis}")
 
-    # Анализируем текст с ChatGPT
-    result = analyze_text(transcript)
+# Функция установки вебхука
+async def set_webhook(application):
+    webhook_url = f"{WEBHOOK_URL}/{TELEGRAM_BOT_TOKEN}"
+    await application.bot.set_webhook(webhook_url)
+    logger.info(f"Вебхук установлен: {webhook_url}")
+# Функция обработки входящих обновлений
+@app.route(f"/{TELEGRAM_BOT_TOKEN}", methods=["POST"])
+async def webhook():
+    request_data = request.get_json()
+    update = Update.de_json(request_data, bot)
+    await application.process_update(update)
+    return "OK", 200
 
-    # Сохраняем в дневник
-    save_to_excel(transcript, result["distortion"], result["comment"])
-
-    # Отправляем пользователю результат
-    await update.message.reply_text(f"Разбор:\n\nИскажения:\n{result['distortion']}\n\nОпровержение:\n{result['comment']}")
-
-# Обработчик текстовых сообщений
-async def handle_text(update: Update, context: CallbackContext):
-    user_text = update.message.text
-
-    # Анализируем текст с ChatGPT
-    result = analyze_text(user_text)
-
-    # Сохраняем в дневник
-    save_to_excel(user_text, result["distortion"], result["comment"])
-
-    # Отправляем пользователю результат
-    await update.message.reply_text(f"Разбор:\n\nИскажения:\n{result['distortion']}\n\nОпровержение:\n{result['comment']}")
-
-# Команда /export (отправка дневника)
-async def export_data(update: Update, context: CallbackContext):
-    if os.path.exists(EXCEL_FILE):
-        await update.message.reply_document(document=open(EXCEL_FILE, "rb"), filename="diary.xlsx", caption="Вот твой дневник 📖")
-    else:
-        await update.message.reply_text("Файл дневника пока пуст.")
-
-# Основная функция бота
+# Основная функция
 def main():
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    global application
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-    # Добавляем обработчики команд и сообщений
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("export", export_data))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    app.add_handler(MessageHandler(filters.VOICE, handle_voice))
+    # Добавляем обработчики
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    # Запускаем бота
-    app.run_polling()
+    # Запускаем Flask сервер
+    port = int(os.getenv("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
 
 if __name__ == "__main__":
     main()
