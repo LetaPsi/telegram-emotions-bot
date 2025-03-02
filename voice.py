@@ -59,6 +59,14 @@ application.add_handler(CommandHandler("start", start))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 application.add_handler(MessageHandler(filters.VOICE, handle_voice))
 
+# Установка Webhook при запуске
+@app.before_first_request
+def activate_webhook():
+    """Устанавливает Webhook перед обработкой первых запросов"""
+    bot = application.bot
+    bot.set_webhook(f"{WEBHOOK_URL}/{TELEGRAM_TOKEN}")
+    logger.info(f"✅ Webhook установлен: {WEBHOOK_URL}/{TELEGRAM_TOKEN}")
+
 # Обработчик для Webhook
 @app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
 def webhook():
